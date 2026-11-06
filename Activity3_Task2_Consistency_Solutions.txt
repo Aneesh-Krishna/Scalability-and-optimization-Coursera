@@ -1,0 +1,77 @@
+TASK 2: PROPOSE SOLUTIONS TO ENSURE DATA CONSISTENCY - HIGH-TRAFFIC NEWS PLATFORM
+================================================================================
+
+Goal: Keep headlines, articles, trending topics, and comments accurate and
+the same on every server, while keeping the speed benefits of caching.
+
+
+CONSISTENCY SOLUTIONS TABLE
+---------------------------
+
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Solution             | How It Works?                                 | Use Case                                       |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Cache Expiration &   | Every cache entry has a TTL as a safety net,  | Headlines expire every 5 minutes, and an       |
+| Invalidation         | and the related entries are deleted at once   | article's cache entry is cleared the moment    |
+|                      | when the content changes in the database.     | an editor saves a change.                      |
+|                      | Fixes: Stale Data.                            |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Publish-Subscribe    | When content changes, the CMS publishes an    | An editor updates a breaking story; a message  |
+| (Redis Pub/Sub)      | event on a Redis channel. Every server is     | on the "article-updated" channel tells all     |
+|                      | subscribed and clears or refreshes its copy   | servers in all regions to drop the old copy    |
+|                      | right away. Fixes: Cache Inconsistency.       | within milliseconds.                           |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Write-Through        | Data is written to the database and the cache | When an editor publishes a revision, the new   |
+| Caching              | in the same operation, so the cache always    | version goes to both the database and Redis,   |
+|                      | holds the newest version. Fixes: Stale Data.  | so the next reader gets the update instantly.  |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Read-Through Caching | On a cache miss, the cache layer loads the    | After an article's cache entry is cleared, the |
+|                      | latest data from the database, stores it, and | next request loads the corrected version from  |
+|                      | returns it, so a cleared entry is refilled    | the database and caches it for all readers.    |
+|                      | with fresh data. Fixes: Stale Data.           |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Single Shared Cache  | Trending topics are computed in one place and | Trending topics are kept in one Redis Sorted   |
+| for Global Data      | stored in one shared Redis cluster that all   | Set updated with ZINCRBY on each view, so      |
+| (Central Source)     | servers read, instead of each server building | London and New York see the same Top 10 list.  |
+|                      | its own list. Fixes: Cache Inconsistency.     |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Real-Time Streams +  | New comments are appended to a Redis Stream   | A comment on a live story is added to the      |
+| WebSockets for       | (or list) and pushed to readers over          | story's Redis Stream and pushed to everyone    |
+| Comments             | WebSockets, instead of waiting for a cache    | viewing it in under a second.                  |
+|                      | refresh. Fixes: Synchronization Delays.       |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Versioning           | Each article has a version number or          | A server holding version 3 ignores a delayed   |
+|                      | timestamp. The cache only accepts an update   | version 2 update, so older content never       |
+|                      | if it is newer than what it already holds.    | overwrites the latest edit.                    |
+|                      | Fixes: Out-of-Order Updates.                  |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Geographically       | Each region has a local cache node close to   | An update made in the US is replicated to the  |
+| Distributed Caching  | its readers for speed, and updates are        | Europe and Asia cache nodes within seconds,    |
+|                      | replicated to all regions as soon as they     | and readers get it from their nearest node.    |
+|                      | happen. Fixes: Synchronization Delays.        |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| CDN Purge on Publish | When an article changes, the system also      | A corrected headline triggers a CDN purge of   |
+|                      | sends a purge request to the CDN, so the edge | that article's URL, so readers in every region |
+|                      | servers drop the old page along with the app  | get the new version on their next request.     |
+|                      | cache. Fixes: CDN / Edge Cache Lag.           |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Locking & Request    | When a popular entry expires, only one server | When a breaking story is updated, one request  |
+| Coalescing           | gets a short Redis lock (SET NX EX) to        | rebuilds its cache entry while the others wait |
+|                      | rebuild it; other requests wait briefly or    | or get the old copy for a moment, protecting   |
+|                      | get the old copy. Fixes: Cache Stampede.      | the database during traffic spikes.            |
++----------------------+-----------------------------------------------+------------------------------------------------+
+
+
+HOW THE SOLUTIONS WORK TOGETHER
+-------------------------------
+
+1. Editor saves an article -> write-through updates the database and Redis.
+2. A Pub/Sub event and a CDN purge are sent so every server, region, and
+   edge location drops the old version immediately.
+3. Version numbers make sure a late or duplicate update cannot bring back
+   older content.
+4. The next reader triggers a read-through refill, with a lock so only one
+   request rebuilds the entry.
+5. Short TTLs act as a safety net in case any invalidation message is lost.
+6. Comments and trending topics use real-time streams and one shared Redis
+   cluster, so all users see the same live data within a second.

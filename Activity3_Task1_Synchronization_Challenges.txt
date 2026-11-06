@@ -1,0 +1,55 @@
+TASK 1: IDENTIFY THE SYNCHRONIZATION CHALLENGES - HIGH-TRAFFIC NEWS PLATFORM
+===========================================================================
+
+Scenario: A news website runs on many servers in several regions and uses a
+distributed cache for headlines, article summaries, trending topics, and user
+comments. Because each server and region can hold its own cached copy, the
+copies can fall out of sync with the database and with each other.
+
+
+SYNCHRONIZATION CHALLENGES TABLE
+--------------------------------
+
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Challenge            | Why It Happens?                               | Example Scenario                               |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Stale Data           | Cached headlines and articles are not updated | An editor corrects a casualty number in a      |
+|                      | or cleared when an editor revises an article. | breaking news story, but some servers keep     |
+|                      | The old copy keeps being served until its     | showing the old, wrong number until their      |
+|                      | TTL runs out, and long TTLs make this worse.  | cache expires.                                 |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Cache Inconsistency  | Each server or region keeps its own cached    | Readers in London see "Election Results" as    |
+|                      | copy and refreshes it at different times, so  | the #1 trending topic while readers in New     |
+|                      | servers hold different versions of the same   | York still see yesterday's "Storm Warning",    |
+|                      | data (for example, the trending list).        | causing confusion between users.               |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Synchronization      | Updates spread slowly because of network      | A user posts a comment on a live story, but    |
+| Delays               | latency between regions, replication lag, or  | other readers only see it 3-5 minutes later,   |
+|                      | caches that only refresh on a timer instead   | so the live discussion feels broken and        |
+|                      | of when new data is written.                  | replies appear out of context.                 |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Out-of-Order Updates | Two updates to the same article arrive at     | An editor publishes version 2 and then version |
+| (Race Conditions)    | different servers in a different order, so an | 3 of a story; one server receives them in      |
+|                      | older update can overwrite a newer one in the | reverse order and ends up caching version 2.   |
+|                      | cache.                                        |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Cache Stampede       | When a popular cached item expires or is      | A major breaking story is updated, its cache   |
+| (Thundering Herd)    | cleared, thousands of requests miss the cache | entry is cleared, and 50,000 readers hit the   |
+|                      | at once and all hit the database to rebuild   | database at once, slowing the whole site       |
+|                      | it at the same time.                          | exactly when traffic is highest.               |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| CDN / Edge Cache     | Pages are also cached at CDN edge locations   | The app cache is updated with a corrected      |
+| Lag                  | close to readers. If only the app cache is    | headline, but readers in Asia still get the    |
+|                      | cleared, the CDN keeps serving the old page   | old headline from their local CDN edge server. |
+|                      | until its own TTL expires.                    |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+
+
+SUMMARY OF ROOT CAUSES
+----------------------
+
+- Caches are refreshed on a timer instead of when the data actually changes.
+- Updates are not broadcast to every server and region at the same time.
+- Network latency and replication lag between regions delay updates.
+- Updates carry no version number, so old data can overwrite new data.
+- Multiple cache layers (app cache and CDN) are not cleared together.

@@ -1,0 +1,93 @@
+TASK 1: SELECT THE BEST EXPIRATION STRATEGY - BANKING SYSTEM
+============================================================
+
+Scenario: A banking system caches data to improve performance and security.
+Each dataset changes at a different rate and carries a different level of
+risk, so each one needs its own expiration policy.
+
+
+EXPIRATION STRATEGIES USED
+--------------------------
+
+- Absolute Expiration: The item is removed at a fixed time or after a fixed
+  duration, regardless of how often it is used.
+- Sliding Expiration: The timer resets every time the item is used, so the
+  item expires only after a period of inactivity.
+- Dependent Expiration: The item stays in the cache until the data it
+  depends on (e.g., a database record) changes, then it is cleared.
+
+
+EXPIRATION STRATEGY TABLE
+-------------------------
+
++------------------------+----------------------------+-----------------------------------------------------------------+
+| Data Type              | Best Expiration Strategy   | Justification                                                   |
++------------------------+----------------------------+-----------------------------------------------------------------+
+| User Authentication    | Absolute Expiration (with  | Tokens give access to money, so they must expire after a fixed  |
+| Tokens                 | a sliding idle timeout     | time (e.g., 15 minutes for an access token, 8 hours maximum per |
+|                        | inside the fixed limit)    | login) no matter how active the user is. A stolen token stops   |
+|                        |                            | working soon after. A shorter 5-10 minute idle timeout also     |
+|                        |                            | logs out a user who walks away from the screen, but activity    |
+|                        |                            | can never extend the token past its fixed limit. Tokens are     |
+|                        |                            | also deleted immediately on logout, password change, or         |
+|                        |                            | suspected fraud.                                                |
++------------------------+----------------------------+-----------------------------------------------------------------+
+| Transaction History    | Dependent Expiration       | Past (posted) transactions never change, so there is no reason  |
+|                        | (event-based invalidation, | to refresh them on a timer. The cached history is cleared only  |
+|                        | with a long TTL as backup) | when a new transaction is posted or a pending one settles or is |
+|                        |                            | reversed for that account. A long TTL (e.g., 24 hours) acts     |
+|                        |                            | only as a safety net. Users see new transactions right away,    |
+|                        |                            | and the database is not queried again and again for data that   |
+|                        |                            | has not changed.                                                |
++------------------------+----------------------------+-----------------------------------------------------------------+
+| Live Exchange Rates    | Absolute Expiration with a | Rates change every few seconds, so each cached rate expires     |
+|                        | very short TTL (plus       | after a fixed, very short time (e.g., 30-60 seconds), and the   |
+|                        | refresh on rate updates)   | cache is overwritten as soon as the rate feed sends a new       |
+|                        |                            | value. Thousands of users share one cached rate instead of each |
+|                        |                            | calling the rate provider, which keeps the site fast. The short |
+|                        |                            | lifetime means the displayed rate is never more than seconds    |
+|                        |                            | old. For an actual currency exchange, the rate is confirmed     |
+|                        |                            | live and locked for the customer before the trade is executed.  |
++------------------------+----------------------------+-----------------------------------------------------------------+
+| One-Time Passwords     | Absolute Expiration        | A verification code must stop working after a fixed time (e.g., |
+| (OTP) / 2FA Codes      |                            | 5 minutes) and be deleted at once after it is used, so it       |
+| (additional)           |                            | cannot be reused or guessed later.                              |
++------------------------+----------------------------+-----------------------------------------------------------------+
+| Account Balance        | Dependent Expiration (very | The balance changes only when money moves, so the cached value  |
+| (additional)           | short TTL as backup)       | is cleared on every deposit, withdrawal, or transfer. A short   |
+|                        |                            | TTL (e.g., 30 seconds) is a safety net. Payments and transfers  |
+|                        |                            | always check the balance in the database, never the cache.      |
++------------------------+----------------------------+-----------------------------------------------------------------+
+| User Profile & Saved   | Dependent Expiration       | Names, addresses, and saved payees rarely change, so they stay  |
+| Payees (additional)    |                            | cached until the user edits them. The cache is cleared on any   |
+|                        |                            | change so a transfer is never sent to an outdated payee         |
+|                        |                            | account.                                                        |
++------------------------+----------------------------+-----------------------------------------------------------------+
+
+
+SUMMARY OF THE THREE REQUIRED DATASETS
+--------------------------------------
+
+1. User Authentication Tokens -> Absolute Expiration
+   Security comes first. A fixed lifetime limits how long a stolen token can
+   be used, and a short idle timeout inside that limit protects unattended
+   sessions.
+
+2. Transaction History -> Dependent Expiration
+   Old transactions never change, so the cache is refreshed only when a new
+   transaction is posted. This keeps the history accurate while avoiding
+   unnecessary database queries.
+
+3. Live Exchange Rates -> Absolute Expiration (very short TTL)
+   Rates change constantly, so a very short fixed lifetime, plus refreshing
+   when the rate feed sends a new value, keeps them current. Many users still
+   share one cached value, which reduces load on the rate provider.
+
+
+SECURITY AND RELIABILITY RULES
+------------------------------
+
+- Never cache card numbers, PINs, or passwords.
+- Encrypt cached sensitive data and keep the cache on a private network.
+- Always confirm balances and exchange rates against the source of truth
+  before money moves; the cache is only used for display.

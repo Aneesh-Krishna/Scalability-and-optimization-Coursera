@@ -1,0 +1,117 @@
+TASK 1: IDENTIFY WHAT TO CACHE IN REDIS - HIGH-TRAFFIC E-COMMERCE PLATFORM
+==========================================================================
+
+Scenario: An e-commerce platform serving millions of users has slow product
+pages, high server load from frequent database queries, and a slow checkout.
+The strategy below places a shared Redis cluster between all application
+servers and the database, so every server reads and writes the same cache.
+
+
+REDIS CACHING STRATEGY TABLE
+----------------------------
+
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Data Type            | Why Cache It? (Performance Benefits)          | Expiration & Synchronization                   |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| User Sessions        | Every request must check who the user is.     | Store for 24 hours, TTL refreshed on each      |
+| (Redis Hash)         | Keeping sessions in Redis avoids a database   | activity (sliding expiration). Deleted at once |
+|                      | lookup per click, and because all servers     | on logout or password change. Shared by all    |
+|                      | share Redis, users stay logged in no matter   | servers, so no "sticky sessions" are needed.   |
+|                      | which server handles their request.           |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Product Listings &   | Product pages are the most-viewed pages.      | Cache for 30 minutes, AND delete the key when  |
+| Product Details      | Serving name, description, images, and specs  | product details change (cache-aside pattern:   |
+| (Redis Hash/String)  | from memory removes most database reads and   | on a miss, read the DB and refill Redis). The  |
+|                      | fixes slow product page loads.                | change is broadcast via Redis Pub/Sub so all   |
+|                      |                                               | servers drop any local copies too.             |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Prices & Inventory   | Shown on every product, deal, and cart page.  | Short TTL of 1-5 minutes, updated immediately  |
+| Counts               | Reading them from Redis keeps pages fast,     | on price/stock change (write-through). Stock   |
+| (Redis String)       | and atomic DECR operations let many servers   | is reserved with atomic DECR so two servers    |
+|                      | reserve stock at the same time safely during  | cannot sell the same last item. The final      |
+|                      | checkout.                                     | order is always confirmed in the database.     |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Shopping Cart        | The cart is read on nearly every page and     | Store for 7 days of inactivity, updated on     |
+| (Redis Hash)         | throughout checkout. Keeping it in Redis      | every add/remove (write-through, also saved to |
+|                      | makes cart and checkout steps instant, which  | the DB so carts are never lost). Works across  |
+|                      | directly speeds up the slow checkout process. | all servers and devices. Deleted after the     |
+|                      |                                               | order is placed.                               |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Checkout Data        | Shipping address, chosen delivery option, and | Store for 30 minutes (the length of a          |
+| (Redis Hash)         | tax/shipping estimates are reused across each | checkout). Deleted once the order is completed |
+|                      | checkout step. Caching them avoids            | or abandoned. Payment card details are NEVER   |
+|                      | recalculating and re-querying on every step.  | cached.                                        |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Search Results &     | Popular searches and "deals" queries repeat   | Cache for 10 minutes. Cleared when products in |
+| Deals                | constantly and are expensive to compute.      | the results change or a deal starts/ends;      |
+| (Redis String/List)  | Caching them gives instant results and        | deal keys get a TTL that ends exactly when the |
+|                      | removes heavy search load from the database.  | deal expires.                                  |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Best Sellers &       | Shown on the homepage and category pages.     | Refresh every 15 minutes. Scores are updated   |
+| Trending Products    | Redis Sorted Sets keep products ranked by     | in real time with ZINCRBY on each purchase,    |
+| (Redis Sorted Set)   | sales, so "Top 10" lists are read instantly   | so every server always sees the same ranking.  |
+|                      | instead of running costly sorting queries.    |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Category Pages &     | Categories and menus appear on every page.    | Cache for 1 hour, invalidated when a product   |
+| Navigation Menus     | Caching them avoids repeating the same        | is added to or removed from a category.        |
+| (Redis String)       | queries millions of times a day.              |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Product Reviews &    | Reviews are read far more often than they are | Cache for 1 hour, refreshed when a new review  |
+| Ratings              | written. Caching avoids querying the reviews  | is posted for that product.                    |
+| (Redis Hash/List)    | table on every product page view.             |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+
+
+SYNCHRONIZATION ACROSS SERVERS
+------------------------------
+
+1. One shared cache: All application servers connect to the same Redis
+   Cluster instead of keeping separate in-memory caches. Every server sees
+   the same sessions, carts, and product data, so a user can be routed to
+   any server.
+
+2. Cache-aside for read-heavy data (products, categories, reviews, search):
+   The app checks Redis first. On a miss, it reads the database, stores the
+   result in Redis with a TTL, and returns it.
+
+3. Write-through for critical data (carts, prices, inventory): When the data
+   changes, the app updates the database and Redis together, so the cache
+   never serves outdated values.
+
+4. Invalidation on change: When an admin edits a product or price, the app
+   deletes the related Redis keys and publishes an event on a Redis Pub/Sub
+   channel. All servers receive it and refresh their data.
+
+5. Atomic operations and locks: Inventory uses atomic DECR/INCR so
+   concurrent orders on different servers cannot oversell. A short Redis
+   lock (SET key value NX EX 10) prevents many servers from rebuilding the
+   same expired key at once (cache stampede).
+
+6. High availability and scaling: Redis Cluster shards data across several
+   nodes to handle millions of users. Each primary node has a replica, and
+   Redis Sentinel/Cluster failover promotes a replica if a node fails.
+   Sessions and carts use persistence (AOF) so they survive a restart.
+
+
+WHY THESE EXPIRATION TIMES?
+---------------------------
+
+- Sessions (24h sliding) and carts (7 days) are tied to user activity, so
+  active users are never logged out or lose their cart, while abandoned
+  data expires on its own and frees memory.
+- Product details and categories change rarely, so longer TTLs (30 min-1h)
+  combined with invalidation on change give high hit rates and fresh data.
+- Prices and inventory affect money and orders, so they have the shortest
+  TTLs, are written through on every change, and are confirmed in the
+  database at checkout.
+- Search results and deals (10 min) repeat often but must reflect new
+  products and deal start/end times.
+- Checkout data (30 min) only needs to last as long as one checkout.
+
+
+DATA THAT SHOULD NOT BE CACHED
+------------------------------
+
+- Payment card details: never stored in Redis (security and PCI compliance).
+- Final order records and payment confirmation: always written to and read
+  from the database as the source of truth.

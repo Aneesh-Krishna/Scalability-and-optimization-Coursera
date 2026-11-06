@@ -1,0 +1,91 @@
+TASK 1: IDENTIFY WHAT TO CACHE - E-COMMERCE STORE CACHING STRATEGY
+====================================================================
+
+Scenario: An online store selling electronics, clothing, and home goods is
+suffering from slow page loads, high server load when fetching product
+details, and slow shopping cart retrieval. The strategy below uses an
+in-memory cache (e.g., Redis or Memcached) in front of the database.
+
+
+CACHING STRATEGY TABLE
+----------------------
+
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Data Type            | Why Cache It? (Performance Benefits)          | Expiration Strategy                            |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Product Catalog /    | Product pages are the most-viewed pages in    | Refresh every 30 minutes, AND invalidate the   |
+| Product Details      | the store. Caching name, description, images, | product's cache entry immediately when an      |
+|                      | and specs avoids repeated database queries    | admin edits its details.                       |
+|                      | and makes product pages load much faster.     |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Product Prices &     | Shown on every product, listing, and cart     | Short TTL of 1-5 minutes, AND invalidate       |
+| Stock Availability   | page. Caching reduces load, but the data must | immediately on a price change or when stock    |
+|                      | stay accurate so customers are not charged    | changes (purchase/restock). Always re-check    |
+|                      | the wrong price or sold out-of-stock items.   | against the database at checkout.              |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| User Shopping Cart   | Carts are read on almost every page (cart     | Store for 1 hour of inactivity (sliding        |
+|                      | icon, cart page, checkout). Keeping them in   | expiration), updated instantly when items are  |
+|                      | memory gives instant access without hitting   | added/removed. Write through to the database   |
+|                      | the database on every page view.              | so the cart is not lost if the cache clears.   |
+|                      |                                               | Clear the cart cache after checkout.           |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Search Results       | Many customers search for the same popular    | Cache popular queries for 10-15 minutes.       |
+|                      | terms ("laptop", "t-shirt"). Caching results  | Clear related entries when products in those   |
+|                      | avoids running expensive full-text search and | results are added, removed, or changed.        |
+|                      | filter queries again and again.               |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Category Pages &     | Category listings (Electronics, Clothing,     | Refresh every 1 hour, or when a product is     |
+| Navigation Menus     | Home Goods) and menus appear on every page.   | added to or removed from a category.           |
+|                      | Caching them avoids the same queries on every |                                                |
+|                      | single request.                               |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Homepage Featured /  | The homepage gets the most traffic. Caching   | Refresh every 15-30 minutes, or when the       |
+| Best-Seller /        | featured items, deals, and best-seller lists  | marketing team updates promotions. Expire      |
+| Promotions           | keeps it fast during traffic spikes such as   | deals exactly when the promotion ends.         |
+|                      | sales events.                                 |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| Product Reviews &    | Reviews are read far more often than they are | Cache for 30 minutes, refresh when a new       |
+| Ratings              | written. Caching them speeds up product pages | review is posted for that product.             |
+|                      | without querying the reviews table each time. |                                                |
++----------------------+-----------------------------------------------+------------------------------------------------+
+| User Session /       | Login sessions are checked on every request.  | Expire after 30 minutes of inactivity          |
+| Authentication Data  | Keeping them in memory avoids a database      | (sliding), or immediately on logout or         |
+|                      | lookup each time a user clicks a page.        | password change.                               |
++----------------------+-----------------------------------------------+------------------------------------------------+
+
+
+WHY THESE EXPIRATION TIMES?
+---------------------------
+
+- Product details change rarely, so a 30-minute TTL plus invalidation on
+  edit gives high cache hit rates while still showing updates right away.
+
+- Prices and stock change often and directly affect money and orders, so
+  they get the shortest TTL, are invalidated on change, and are always
+  re-checked at checkout. A slightly stale page is acceptable, but a wrong
+  charge or an oversold item is not.
+
+- Shopping carts belong to one user and change through that user's actions,
+  so they are updated on every change instead of waiting for a timer. A
+  1-hour inactivity expiry frees memory from abandoned carts, and writing
+  through to the database means no cart is lost.
+
+- Search results are expensive to compute, and popular searches repeat
+  constantly. A 10-15 minute TTL keeps them reasonably fresh while removing
+  most of the search load.
+
+- Categories, menus, and homepage content change on a schedule set by the
+  business, so longer TTLs or invalidating when the business updates them
+  work well.
+
+- Sessions use a sliding inactivity timeout for security, so an idle
+  session expires on its own.
+
+
+DATA THAT SHOULD NOT BE CACHED (OR ONLY BRIEFLY)
+------------------------------------------------
+
+- Payment details and final order totals at checkout: always read from the
+  database so they are correct and secure.
+- Final stock check when placing an order: must use the database to prevent
+  overselling.
